@@ -267,6 +267,10 @@ func ensureCert(ctx context.Context, log *zerolog.Logger) (string, error) {
 		cert []byte
 		err  error
 	}
+	// token.RunTransfer takes no context and cannot be aborted, so cancellation below returns
+	// without waiting for the browser flow. The goroutine exits on its own once upstream's polling
+	// gives up, and its result is dropped: cert.pem is only written further down, by the caller that
+	// received a result before cancelling.
 	login := make(chan loginResult, 1)
 	go func() {
 		cert, err := token.RunTransfer(loginEndpoint, "", "cert", "callback", callbackURL, false, false, false, false, log, "")

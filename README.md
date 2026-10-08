@@ -112,7 +112,7 @@ Under the hood, `flared` imports the official `github.com/cloudflare/cloudflared
 Quick Tunnel URLs come from the provisioning API response rather than from parsed log output, and `Start` only returns once a connection to the edge is established — so a returned `*Tunnel` is ready to serve traffic.
 
 > [!NOTE]
-> `cloudflared`'s runtime (orchestrator, signal handling and Prometheus collectors) is process-wide state, so one process can run **one tunnel at a time** in this version. A second `Start` before `Close` returns an error.
+> `cloudflared`'s runtime (orchestrator, signal handling and Prometheus collectors) is process-wide state that is never unregistered, so a process can run **one tunnel for its whole lifetime**. A second `Start` — before or after `Close` — returns an error instead of corrupting runtime state; start a new process to run another tunnel.
 
 > [!WARNING]
 > **Binary Size Impact**

@@ -207,16 +207,59 @@ func TestNewLogger_WritesToWriter(t *testing.T) {
 	}
 }
 
+func TestValidateOptions_InvalidOriginURL(t *testing.T) {
+	err := validateOptions(Options{OriginURL: "not-a-url"})
+	if err == nil {
+		t.Fatal("expected error for an OriginURL without a scheme and host")
+	}
+	if !strings.Contains(err.Error(), "invalid OriginURL") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateOptions_InvalidProtocol(t *testing.T) {
+	err := validateOptions(Options{OriginURL: "http://localhost:8080", Protocol: "bogus"})
+	if err == nil {
+		t.Fatal("expected error for an unknown protocol")
+	}
+	if !strings.Contains(err.Error(), "unknown protocol") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateOptions_ValidProtocol(t *testing.T) {
+	for _, protocol := range []string{"quic", "http2", "auto"} {
+		if err := validateOptions(Options{OriginURL: "http://localhost:8080", Protocol: protocol}); err != nil {
+			t.Fatalf("validateOptions(Protocol: %q) error: %v", protocol, err)
+		}
+	}
+}
+
 func TestAcquireRuntime(t *testing.T) {
+	resetRuntimeState()
+	t.Cleanup(resetRuntimeState)
+
 	if err := acquireRuntime(); err != nil {
 		t.Fatalf("first acquireRuntime() error: %v", err)
 	}
 	if err := acquireRuntime(); err == nil {
 		t.Fatal("expected a second tunnel in the same process to be rejected")
 	}
+
 	releaseRuntime()
 	if err := acquireRuntime(); err != nil {
 		t.Fatalf("acquireRuntime() after release error: %v", err)
 	}
+
+	// Collectors registered by a started runtime are never unregistered, so once a runtime has been
+	// built the process cannot run another tunnel, even after the first one is closed.
 	releaseRuntime()
+	markRuntimeUsed()
+	err := acquireRuntime()
+	if err == nil {
+		t.Fatal("expected a second runtime in the same process to be rejected")
+	}
+	if !strings.Contains(err.Error(), "cannot be restarted") {
+		t.Fatalf("unexpected error: %v", err)
+	}
 }

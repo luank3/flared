@@ -84,6 +84,14 @@ func validateOptions(opts Options) error {
 	if (opts.Name != "" && opts.Domain == "") || (opts.Name == "" && opts.Domain != "") {
 		return fmt.Errorf("both Name and Domain must be provided together for Named Tunnels")
 	}
+	// Reject an unusable OriginURL or Protocol here: provisioning a Named Tunnel creates a tunnel
+	// and a DNS route, which must not happen for options that cannot run.
+	if _, err := ingressForOrigin(opts.OriginURL); err != nil {
+		return fmt.Errorf("invalid OriginURL %q: %w", opts.OriginURL, err)
+	}
+	if err := validateProtocol(opts.Protocol); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -120,7 +128,7 @@ func Start(ctx context.Context, opts Options) (*Tunnel, error) {
 		return nil, err
 	}
 
-	return runTunnel(ctx, opts, props, url, log, time.Until(deadline))
+	return runTunnel(ctx, opts, props, url, log, deadline, timeout)
 }
 
 // newLogger builds the zerolog logger handed to cloudflared. Logs are only produced when ShowLog

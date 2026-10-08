@@ -46,21 +46,35 @@ func userAgent() string { return "cloudflared/" + cloudflaredVersion }
 
 func osArch() string { return runtime.GOOS + "_" + runtime.GOARCH }
 
-// cloudflared's orchestrator, signal handling and Prometheus collectors are process-wide state, so
-// only one runtime can exist per process. Guard against a second Start turning that into a panic.
+// cloudflared's orchestrator, signal handling and Prometheus collectors are process-wide state, and
+// the collectors are registered on the default registry without ever being unregistered. A runtime
+// therefore cannot be rebuilt once it has been started, so guard both cases instead of panicking
+// inside prometheus.MustRegister.
 var (
 	runtimeMu     sync.Mutex
 	runtimeActive bool
+	runtimeUsed   bool
 )
 
 func acquireRuntime() error {
 	runtimeMu.Lock()
 	defer runtimeMu.Unlock()
 	if runtimeActive {
-		return fmt.Errorf("a tunnel is already running in this process: cloudflared's runtime can only be started once per process")
+		return fmt.Errorf("a tunnel is already running in this process: close it before starting another")
+	}
+	if runtimeUsed {
+		return fmt.Errorf("cloudflared's runtime has already been started in this process and cannot be restarted; start a new process to run another tunnel")
 	}
 	runtimeActive = true
 	return nil
+}
+
+// markRuntimeUsed records that this process can no longer build a runtime. It is called before the
+// first collector is registered on the default Prometheus registry.
+func markRuntimeUsed() {
+	runtimeMu.Lock()
+	defer runtimeMu.Unlock()
+	runtimeUsed = true
 }
 
 func releaseRuntime() {
@@ -69,9 +83,33 @@ func releaseRuntime() {
 	runtimeActive = false
 }
 
+// resetRuntimeState clears the guard. It exists for tests.
+func resetRuntimeState() {
+	runtimeMu.Lock()
+	defer runtimeMu.Unlock()
+	runtimeActive, runtimeUsed = false, false
+}
+
+// validateProtocol rejects a protocol cloudflared cannot run, before any account state is created.
+func validateProtocol(protocol string) error {
+	if protocol == "" {
+		return nil
+	}
+	logger := zerolog.Nop()
+	_, err := connection.NewProtocolSelector(protocol, &logger)
+	return err
+}
+
+// ingressForOrigin builds the single catch-all ingress rule that forwards every request to originURL.
+func ingressForOrigin(originURL string) (ingress.Ingress, error) {
+	return ingress.ParseIngress(&config.Configuration{
+		Ingress: []config.UnvalidatedIngressRule{{Service: originURL}},
+	})
+}
+
 // runTunnel wires up cloudflared's runtime for an already provisioned tunnel and waits until it is
 // connected to the edge, or until the startup timeout expires.
-func runTunnel(ctx context.Context, opts Options, props *connection.TunnelProperties, url string, log *zerolog.Logger, budget time.Duration) (*Tunnel, error) {
+func runTunnel(ctx context.Context, opts Options, props *connection.TunnelProperties, url string, log *zerolog.Logger, deadline time.Time, timeout time.Duration) (*Tunnel, error) {
 	tCtx, cancel := context.WithCancel(ctx)
 	t := &Tunnel{
 		url:      url,
@@ -108,7 +146,7 @@ func runTunnel(ctx context.Context, opts Options, props *connection.TunnelProper
 		exitCh <- t.err
 	}()
 
-	timer := time.NewTimer(budget)
+	timer := time.NewTimer(max(time.Until(deadline), 0))
 	defer timer.Stop()
 
 	select {
@@ -123,7 +161,7 @@ func runTunnel(ctx context.Context, opts Options, props *connection.TunnelProper
 		return nil, fmt.Errorf("tunnel exited before it connected to the Cloudflare edge")
 	case <-timer.C:
 		_ = t.Close()
-		return nil, fmt.Errorf("timeout after %s waiting for the tunnel to connect to the Cloudflare edge", budget)
+		return nil, fmt.Errorf("timeout after %s waiting for the tunnel to connect to the Cloudflare edge", timeout)
 	case <-tCtx.Done():
 		cancel()
 		_ = t.Close()
@@ -145,9 +183,7 @@ func buildRuntimeConfig(ctx context.Context, opts Options, props *connection.Tun
 	}
 	log.Info().Msgf("Generated Connector ID: %s", clientConfig.ConnectorID)
 
-	ingressRules, err := ingress.ParseIngress(&config.Configuration{
-		Ingress: []config.UnvalidatedIngressRule{{Service: opts.OriginURL}},
-	})
+	ingressRules, err := ingressForOrigin(opts.OriginURL)
 	if err != nil {
 		return nil, nil, fmt.Errorf("invalid OriginURL %q: %w", opts.OriginURL, err)
 	}
@@ -162,6 +198,8 @@ func buildRuntimeConfig(ctx context.Context, opts Options, props *connection.Tun
 	if err != nil {
 		return nil, nil, err
 	}
+
+	markRuntimeUsed()
 
 	warpRouting := ingress.NewWarpRoutingConfig(&config.WarpRoutingConfig{})
 	originDialer := ingress.NewOriginDialer(ingress.OriginConfig{

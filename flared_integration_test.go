@@ -138,6 +138,42 @@ func TestIntegration_QuickTunnel_ContextCancelled(t *testing.T) {
 	t.Logf("Start() returned after %v: %v", elapsed, err)
 }
 
+func TestIntegration_StartAfterCloseIsRejected(t *testing.T) {
+	if os.Getenv(envSubprocess) != "1" {
+		runSubprocess(t)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	first, err := Start(ctx, Options{
+		OriginURL: "http://localhost:19999",
+		Timeout:   20 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Start() error: %v", err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("Close() error: %v", err)
+	}
+
+	// cloudflared's runtime cannot be rebuilt in the same process: this must be a clear error, not a
+	// panic inside prometheus.MustRegister.
+	second, err := Start(ctx, Options{
+		OriginURL: "http://localhost:19999",
+		Timeout:   20 * time.Second,
+	})
+	if err == nil {
+		second.Close()
+		t.Fatal("expected a second Start() in the same process to be rejected")
+	}
+	if !strings.Contains(err.Error(), "cannot be restarted") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	t.Logf("second Start() returned: %v", err)
+}
+
 func TestIntegration_QuickTunnel_Timeout(t *testing.T) {
 	if os.Getenv(envSubprocess) != "1" {
 		runSubprocess(t)
