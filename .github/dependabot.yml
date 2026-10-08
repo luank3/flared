@@ -7,6 +7,10 @@ updates:
     open-pull-requests-limit: 5
     commit-message:
       prefix: "chore"
+    # cloudflared is the tunnel protocol implementation and is bumped deliberately (see README),
+    # so it is excluded from automated dependency updates.
+    ignore:
+      - dependency-name: "github.com/cloudflare/cloudflared"
     groups:
       go-dependencies:
         patterns: ["*"]

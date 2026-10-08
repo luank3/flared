@@ -1,0 +1,4 @@
+# Keep line endings consistent so gofmt and the CI formatting check behave the same everywhere.
+* text=auto eol=lf
+*.go text
+*.sh text eol=lf

@@ -146,7 +146,7 @@ The `cloudflared` version is pinned in `go.mod` and bumped deliberately — it i
 ## Development
 
 ```bash
-make check              # gofmt check, go vet, unit tests with -race (what CI runs)
+make check              # pre-PR gate: gofmt, tidy, go vet, unit tests with -race
 make test-integration   # live tests against trycloudflare.com (needs network)
 make cover              # unit tests with a per-function coverage report
 make help               # all targets

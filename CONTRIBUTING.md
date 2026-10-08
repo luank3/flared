@@ -22,8 +22,9 @@ make tidy       # go mod tidy && go mod verify
 Run `make help` for the full list. The Makefile is a convenience layer: every target is a plain `go`
 command you can run directly.
 
-`make check` is the gate to pass before opening a pull request. CI (`.github/workflows/ci.yml`) runs
-the same steps on every push and pull request.
+`make check` is the gate to pass before opening a pull request: gofmt, module tidiness, `go vet`
+(both tag sets) and unit tests with `-race`. CI (`.github/workflows/ci.yml`) runs those steps plus
+`go build ./...` and a coverage summary, on pull requests and on pushes to `main`.
 
 ## Testing
 
@@ -39,7 +40,7 @@ service:
 ```bash
 make test-integration
 # or a single case:
-go test -tags=integration -run TestIntegration_QuickTunnel -v -timeout 10m ./...
+go test -tags=integration -run TestIntegration_QuickTunnel -v -timeout 20m ./...
 ```
 
 They provision real Quick Tunnels on `trycloudflare.com` — no Cloudflare account or credentials are

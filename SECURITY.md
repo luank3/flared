@@ -2,8 +2,9 @@
 
 ## Supported versions
 
-Only the latest tagged release (`vYYYY.M.PATCH` on `main`) is supported. Fixes are released as a new
-tag rather than patched into older ones.
+The latest tagged release (`vYYYY.M.PATCH`) and `main` between releases are supported; fixes land on
+`main` and are released as a new tag rather than patched into older ones. If you are on an older tag,
+upgrade to the latest one before reporting.
 
 ## Reporting a vulnerability
 

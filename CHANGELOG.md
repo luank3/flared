@@ -48,7 +48,7 @@ adheres to [Calendar Versioning](https://calver.org/) with `vYYYY.M.PATCH` tags.
 - The readiness timeout reports the configured `Timeout` rather than the remaining budget.
 - Integration coverage for proxying traffic, startup timeout, cancellation and restart rejection.
 
-## [2026.5.2] - 2026-05-30
+## [v2026.5.2] - 2026-05-30
 
 ### Added
 
@@ -59,4 +59,4 @@ adheres to [Calendar Versioning](https://calver.org/) with `vYYYY.M.PATCH` tags.
 - Unit tests for option validation and tunnel lifecycle, and integration tests for Quick Tunnels.
 
 [Unreleased]: https://github.com/luank3/flared/compare/v2026.5.2...HEAD
-[2026.5.2]: https://github.com/luank3/flared/releases/tag/v2026.5.2
+[v2026.5.2]: https://github.com/luank3/flared/releases/tag/v2026.5.2

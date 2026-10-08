@@ -41,7 +41,7 @@ test: ## Run unit tests
 
 .PHONY: test-race
 test-race: ## Run unit tests with the race detector and coverage
-	$(GO) test $(GOFLAGS) -race -coverprofile=$(COVERAGE_FILE) ./...
+	$(GO) test $(GOFLAGS) -race -coverprofile="$(COVERAGE_FILE)" ./...
 
 .PHONY: test-integration
 test-integration: ## Run integration tests (live network, creates real tunnels)
@@ -49,17 +49,22 @@ test-integration: ## Run integration tests (live network, creates real tunnels)
 
 .PHONY: cover
 cover: test-race ## Show the coverage report
-	$(GO) tool cover -func=$(COVERAGE_FILE)
+	$(GO) tool cover -func="$(COVERAGE_FILE)"
 
 .PHONY: tidy
 tidy: ## Tidy and verify module metadata
 	$(GO) mod tidy
 	$(GO) mod verify
 
+.PHONY: tidy-check
+tidy-check: ## Fail if go.mod/go.sum are not tidy
+	$(GO) mod tidy -diff
+	$(GO) mod verify
+
 .PHONY: check
-check: fmt-check vet test-race ## Format check, vet and unit tests (CI default)
+check: fmt-check tidy-check vet test-race ## Pre-PR gate: format, module tidiness, vet, unit tests
 
 .PHONY: clean
 clean: ## Remove build and coverage artifacts
 	$(GO) clean ./...
-	rm -f $(COVERAGE_FILE)
+	rm -f "$(COVERAGE_FILE)"
