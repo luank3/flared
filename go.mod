@@ -1,4 +1,4 @@
-module github.com/lucanhost/flared
+module github.com/luank3/flared
 
 go 1.26
 

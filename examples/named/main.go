@@ -6,7 +6,7 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/lucanhost/flared"
+	"github.com/luank3/flared"
 )
 
 func main() {

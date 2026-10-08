@@ -1,5 +1,9 @@
 # flared
 
+[![CI](https://github.com/luank3/flared/actions/workflows/ci.yml/badge.svg)](https://github.com/luank3/flared/actions/workflows/ci.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/luank3/flared.svg)](https://pkg.go.dev/github.com/luank3/flared)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 `flared` is a Go library that allows you to run Cloudflare Tunnels (`cloudflared`) directly from your Go code.
 
 It supports both **Quick Tunnels** (temporary tunnels via `trycloudflare.com`) and **Named Tunnels** (custom domains via Cloudflare DNS), over QUIC or HTTP/2.
@@ -7,8 +11,10 @@ It supports both **Quick Tunnels** (temporary tunnels via `trycloudflare.com`) a
 ## Installation
 
 ```bash
-go get github.com/lucanhost/flared
+go get github.com/luank3/flared
 ```
+
+Requires Go 1.26 or newer.
 
 ## Quick Start
 
@@ -24,7 +30,7 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/lucanhost/flared"
+	"github.com/luank3/flared"
 )
 
 func main() {
@@ -69,7 +75,7 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/lucanhost/flared"
+	"github.com/luank3/flared"
 )
 
 func main() {
@@ -134,3 +140,24 @@ Quick Tunnel URLs come from the provisioning API response rather than from parse
 ## Dependencies
 
 `flared` requires no `replace` directives in your `go.mod`; the upstream `cloudflared`, `quic-go` and `urfave/cli` modules are used as published.
+
+The `cloudflared` version is pinned in `go.mod` and bumped deliberately — it is the tunnel protocol implementation, not an incidental dependency.
+
+## Development
+
+```bash
+make check              # gofmt check, go vet, unit tests with -race (what CI runs)
+make test-integration   # live tests against trycloudflare.com (needs network)
+make cover              # unit tests with a per-function coverage report
+make help               # all targets
+```
+
+Unit tests run offline. Integration tests (build tag `integration`) provision real Quick Tunnels, so they need network access and are opt-in; they are run by the `integration` job in CI, which only runs on manual dispatch. Note that cloudflared's runtime is process-wide: a process can start **one tunnel for its whole lifetime**, which is why every integration test re-runs itself in a fresh process.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow and testing rules, and
+[SECURITY.md](SECURITY.md) for how to report a vulnerability. User-visible changes are recorded in
+[CHANGELOG.md](CHANGELOG.md).
+
+## License
+
+[MIT](LICENSE)
