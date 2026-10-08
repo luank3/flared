@@ -4,6 +4,10 @@ package flared
 
 import (
 	"context"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"strings"
@@ -11,9 +15,9 @@ import (
 	"time"
 )
 
-// cloudflared's orchestrator, signal handlers, and Prometheus metrics are global
-// process state. tunnel.Init() + Start() can only be called ONCE per process.
-// Tests that call Start() must run in subprocess isolation.
+// cloudflared's orchestrator and Prometheus collectors are global process state, so
+// Start() can only be called ONCE per process. Tests that call Start() must run in
+// subprocess isolation.
 
 const envSubprocess = "FLARED_INTEGRATION_SUB"
 
@@ -22,7 +26,7 @@ func runSubprocess(t *testing.T) {
 	if os.Getenv(envSubprocess) == "1" {
 		return
 	}
-	cmd := exec.Command("go", "test", "-v", "-tags=integration", "-run", "^"+t.Name()+"$", "-timeout", "30s", ".")
+	cmd := exec.Command("go", "test", "-v", "-tags=integration", "-run", "^"+t.Name()+"$", "-timeout", "200s", ".")
 	cmd.Env = append(os.Environ(), envSubprocess+"=1")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -55,6 +59,83 @@ func TestIntegration_QuickTunnel(t *testing.T) {
 		t.Fatalf("expected trycloudflare.com URL, got %q", url)
 	}
 	t.Logf("Tunnel URL: %s", url)
+}
+
+func TestIntegration_QuickTunnel_ProxiesTraffic(t *testing.T) {
+	if os.Getenv(envSubprocess) != "1" {
+		runSubprocess(t)
+		return
+	}
+
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "hello from %s", r.URL.Path)
+	}))
+	defer origin.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Second)
+	defer cancel()
+
+	tun, err := Start(ctx, Options{
+		OriginURL: origin.URL,
+		Timeout:   30 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Start() error: %v", err)
+	}
+	defer tun.Close()
+
+	// The quick Tunnel URL takes a moment to become reachable, and resolvers may cache the
+	// negative answer for a freshly created hostname, so poll with a generous window.
+	var lastErr error
+	for deadline := time.Now().Add(90 * time.Second); time.Now().Before(deadline); {
+		resp, err := http.Get(tun.URL() + "/proxied")
+		if err != nil {
+			lastErr = err
+			time.Sleep(time.Second)
+			continue
+		}
+		body, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if readErr != nil {
+			t.Fatalf("failed to read response body: %v", readErr)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET /proxied = %d, body: %s", resp.StatusCode, body)
+		}
+		if got, want := string(body), "hello from /proxied"; got != want {
+			t.Fatalf("body = %q, want %q", got, want)
+		}
+		return
+	}
+	t.Fatalf("tunnel URL never became reachable: %v", lastErr)
+}
+
+func TestIntegration_QuickTunnel_ContextCancelled(t *testing.T) {
+	if os.Getenv(envSubprocess) != "1" {
+		runSubprocess(t)
+		return
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(time.Second)
+		cancel()
+	}()
+
+	start := time.Now()
+	_, err := Start(ctx, Options{
+		OriginURL: "http://localhost:19999",
+		Timeout:   60 * time.Second,
+	})
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected error after context cancellation")
+	}
+	if elapsed > 20*time.Second {
+		t.Fatalf("Start() took %v to honour context cancellation", elapsed)
+	}
+	t.Logf("Start() returned after %v: %v", elapsed, err)
 }
 
 func TestIntegration_QuickTunnel_Timeout(t *testing.T) {

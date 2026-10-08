@@ -1,9 +1,13 @@
 package flared
 
 import (
+	"bytes"
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/cloudflare/cloudflared/connection"
+	"github.com/google/uuid"
 )
 
 func TestValidateOptions_MissingOriginURL(t *testing.T) {
@@ -129,8 +133,90 @@ func TestTunnel_Wait_WithError(t *testing.T) {
 	}
 }
 
-func TestCertExists_NoCert(t *testing.T) {
-	if certExists() {
-		t.Skip("cert.pem exists on this system, skipping")
+func TestNormalizeHostname(t *testing.T) {
+	tests := []struct {
+		domain  string
+		want    string
+		wantErr bool
+	}{
+		{domain: "app.example.com", want: "app.example.com"},
+		{domain: "https://app.example.com", want: "app.example.com"},
+		{domain: "http://app.example.com/", want: "app.example.com"},
+		{domain: "app.example.com:8443", wantErr: true},
+		{domain: "", wantErr: true},
 	}
+
+	for _, tt := range tests {
+		t.Run(tt.domain, func(t *testing.T) {
+			got, err := normalizeHostname(tt.domain)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("normalizeHostname(%q) = %q, want error", tt.domain, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("normalizeHostname(%q) error: %v", tt.domain, err)
+			}
+			if got != tt.want {
+				t.Fatalf("normalizeHostname(%q) = %q, want %q", tt.domain, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestProtocol(t *testing.T) {
+	quick := &connection.TunnelProperties{Credentials: connection.Credentials{TunnelID: uuid.New()}, QuickTunnelUrl: "x.trycloudflare.com"}
+	named := &connection.TunnelProperties{}
+
+	tests := []struct {
+		name  string
+		opts  Options
+		props *connection.TunnelProperties
+		want  string
+	}{
+		{name: "explicit protocol wins", opts: Options{Protocol: "http2"}, props: quick, want: "http2"},
+		{name: "quick tunnel defaults to quic", props: quick, want: "quic"},
+		{name: "named tunnel defaults to auto", props: named, want: connection.AutoSelectFlag},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := protocol(tt.opts, tt.props); got != tt.want {
+				t.Fatalf("protocol() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNewLogger_Suppressed(t *testing.T) {
+	var buf bytes.Buffer
+	log := newLogger(Options{ShowLog: false, LogWriter: &buf})
+	log.Info().Msg("hidden")
+	if buf.Len() != 0 {
+		t.Fatalf("expected no log output, got %q", buf.String())
+	}
+}
+
+func TestNewLogger_WritesToWriter(t *testing.T) {
+	var buf bytes.Buffer
+	log := newLogger(Options{ShowLog: true, LogWriter: &buf})
+	log.Info().Msg("visible")
+	if !strings.Contains(buf.String(), "visible") {
+		t.Fatalf("expected log output to contain message, got %q", buf.String())
+	}
+}
+
+func TestAcquireRuntime(t *testing.T) {
+	if err := acquireRuntime(); err != nil {
+		t.Fatalf("first acquireRuntime() error: %v", err)
+	}
+	if err := acquireRuntime(); err == nil {
+		t.Fatal("expected a second tunnel in the same process to be rejected")
+	}
+	releaseRuntime()
+	if err := acquireRuntime(); err != nil {
+		t.Fatalf("acquireRuntime() after release error: %v", err)
+	}
+	releaseRuntime()
 }

@@ -1,41 +1,44 @@
+// Package flared runs Cloudflare Tunnels (cloudflared) in-process.
 package flared
 
 import (
-	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
-	"os/user"
-	"path/filepath"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/cloudflare/cloudflared/cmd/cloudflared/cliutil"
-	"github.com/cloudflare/cloudflared/cmd/cloudflared/tunnel"
-	"github.com/urfave/cli/v2"
+	"github.com/cloudflare/cloudflared/validation"
+	"github.com/rs/zerolog"
 )
-
-var stderrMu sync.Mutex
 
 // Options contains the configuration for starting a cloudflared tunnel.
 type Options struct {
-	// Name is the stable name to identify the tunnel. Used along with Domain to create, route, and run a tunnel.
-	// Requires cloudflare credentials (cert.pem) to be present.
+	// Name is the stable name to identify the tunnel. Used along with Domain to create, route, and run a Named Tunnel.
+	// Requires cloudflare credentials (cert.pem) to be present; if they are missing a browser login is started.
 	Name string
 	// Domain is the expected public hostname for Named Tunnels (e.g., "app.example.com").
 	// If provided alongside Name, it will be used to route traffic.
 	Domain string
+	// OverwriteDNS makes routing a Named Tunnel replace an existing DNS record for Domain instead of
+	// failing when that record points somewhere else. Records that already route to the tunnel are left as is.
+	OverwriteDNS bool
 	// OriginURL is the local service URL to expose (e.g. "http://127.0.0.1:8080").
 	OriginURL string
+	// Protocol is the transport used to reach the Cloudflare edge: "quic", "http2" or "auto".
+	// "auto" starts with QUIC and falls back to HTTP/2. Defaults to "auto" for Named Tunnels and
+	// "quic" for Quick Tunnels, matching cloudflared.
+	Protocol string
 	// ShowLog determines whether cloudflared's internal logs should be printed to os.Stderr.
 	ShowLog bool
 	// LogWriter is an optional writer to receive cloudflared's internal logs.
 	// If nil and ShowLog is false, logs are suppressed.
 	LogWriter io.Writer
-	// Timeout is the maximum time to wait for a Quick Tunnel URL.
+	// Timeout is the maximum time Start may take to provision the tunnel and connect it to the
+	// Cloudflare edge. It does not limit the lifetime of the returned Tunnel.
 	// Defaults to 15 seconds if zero.
 	Timeout time.Duration
 }
@@ -57,17 +60,10 @@ func (t *Tunnel) URL() string {
 	return t.url
 }
 
-// Close gracefully shuts down the tunnel and stops the internal cloudflared process.
+// Close gracefully shuts down the tunnel and stops the tunnel connections.
 func (t *Tunnel) Close() error {
 	t.closeOnce.Do(func() {
 		t.cancel()
-		// cloudflared might close the shutdown channel itself on SIGINT,
-		// so we use recover to handle "close of closed channel" panics.
-		defer func() {
-			if r := recover(); r != nil {
-				// Channel already closed by cloudflared, safe to ignore.
-			}
-		}()
 		close(t.shutdown)
 	})
 	t.wg.Wait()
@@ -78,19 +74,6 @@ func (t *Tunnel) Close() error {
 func (t *Tunnel) Wait() error {
 	t.wg.Wait()
 	return t.err
-}
-
-func certExists() bool {
-	u, err := user.Current()
-	if err != nil {
-		return false
-	}
-	certPath := filepath.Join(u.HomeDir, ".cloudflared", "cert.pem")
-	fileInfo, err := os.Stat(certPath)
-	if err == nil && fileInfo.Size() > 0 {
-		return true
-	}
-	return false
 }
 
 // validateOptions checks that the given options are valid before starting a tunnel.
@@ -104,146 +87,68 @@ func validateOptions(opts Options) error {
 	return nil
 }
 
-// Start creates and runs a tunnel in-process. It blocks until the tunnel is established.
+// Start creates and runs a tunnel in-process. It blocks until the tunnel is connected to the edge.
 func Start(ctx context.Context, opts Options) (*Tunnel, error) {
 	if err := validateOptions(opts); err != nil {
 		return nil, err
 	}
-
-	if opts.Name != "" && !certExists() {
-		fmt.Println("cert.pem not found. Starting Cloudflare login process...")
-		loginApp := &cli.App{
-			Name:     "cloudflared",
-			Commands: tunnel.Commands(),
-		}
-		if err := loginApp.RunContext(ctx, []string{"cloudflared", "tunnel", "login"}); err != nil {
-			return nil, fmt.Errorf("failed to login: %w", err)
-		}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 
-	tCtx, cancel := context.WithCancel(ctx)
-	t := &Tunnel{
-		cancel:   cancel,
-		shutdown: make(chan struct{}),
+	if err := acquireRuntime(); err != nil {
+		return nil, err
 	}
 
-	// Prepare arguments for the cli App
-	args := []string{"cloudflared", "tunnel"}
-	if opts.Name != "" && opts.Domain != "" {
-		// Note: We pass --output "" to workaround an upstream bug in cloudflared
-		// where the global output flag defaults to 'default' but create() expects '' or 'json'/'yaml'.
-		args = append(args, "--output", "", "--name", opts.Name, "--hostname", opts.Domain, "--overwrite-dns", "--url", opts.OriginURL)
-	} else {
-		args = append(args, "--url", opts.OriginURL)
-	}
+	log := newLogger(opts)
 
-	var oldStderr *os.File
-	var pw *os.File
-	urlCh := make(chan string, 1)
-
-	if opts.Name == "" {
-		// Quick Tunnel: Must intercept os.Stderr to find the URL
-		pr, pipeWriter, err := os.Pipe()
-		if err != nil {
-			return nil, fmt.Errorf("failed to create pipe: %w", err)
-		}
-		pw = pipeWriter
-
-		stderrMu.Lock()
-		oldStderr = os.Stderr
-		os.Stderr = pw
-		stderrMu.Unlock()
-
-		logWriter := io.Discard
-		if opts.ShowLog {
-			if opts.LogWriter != nil {
-				logWriter = opts.LogWriter
-			} else {
-				logWriter = oldStderr
-			}
-		}
-
-		go func() {
-			scanner := bufio.NewScanner(pr)
-			urlRegex := regexp.MustCompile(`https://[a-zA-Z0-9-]+\.trycloudflare\.com`)
-			for scanner.Scan() {
-				line := scanner.Text()
-				fmt.Fprintln(logWriter, line)
-				if match := urlRegex.FindString(line); match != "" {
-					select {
-					case urlCh <- match:
-					default:
-					}
-				}
-			}
-		}()
-	} else if !opts.ShowLog {
-		// Named Tunnel + Hide Logs: Just redirect to /dev/null
-		devNull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0666)
-		if err == nil {
-			stderrMu.Lock()
-			oldStderr = os.Stderr
-			pw = devNull
-			os.Stderr = pw
-			stderrMu.Unlock()
-		}
-	}
-
-	bInfo := cliutil.GetBuildInfo("DEV", "unknown")
-	tunnel.Init(bInfo, t.shutdown)
-
-	app := &cli.App{
-		Name:            "cloudflared",
-		Commands:        tunnel.Commands(),
-		ExitErrHandler:  func(c *cli.Context, err error) {},
-	}
-
-	t.wg.Add(1)
-	go func() {
-		defer t.wg.Done()
-		defer func() {
-			if oldStderr != nil {
-				stderrMu.Lock()
-				os.Stderr = oldStderr
-				stderrMu.Unlock()
-			}
-			if pw != nil {
-				pw.Close()
-			}
-		}()
-		err := app.RunContext(tCtx, args)
-		// Ignore errors caused by context cancellation (graceful shutdown)
-		if err != nil && tCtx.Err() == nil {
-			t.err = err
-		}
-	}()
-
+	// The startup budget covers provisioning and connecting; the returned Tunnel is not bound by it.
 	timeout := opts.Timeout
-	if timeout == 0 {
-		timeout = 15 * time.Second
+	if timeout <= 0 {
+		timeout = defaultTimeout
+	}
+	deadline := time.Now().Add(timeout)
+	provisionCtx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+
+	props, url, err := provision(provisionCtx, opts, log)
+	if err != nil {
+		releaseRuntime()
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, fmt.Errorf("timeout after %s provisioning the tunnel: %w", timeout, err)
+		}
+		return nil, err
 	}
 
-	if opts.Name == "" {
-		// Wait for the Quick Tunnel URL to be printed
-		select {
-		case url := <-urlCh:
-			t.url = url
-		case <-time.After(timeout):
-			t.Close()
-			return nil, fmt.Errorf("timeout waiting for quick tunnel URL")
-		case <-tCtx.Done():
-			return nil, fmt.Errorf("tunnel context cancelled")
-		}
-	} else {
-		if opts.Domain != "" {
-			domain := opts.Domain
-			// Ensure it has a protocol scheme if it doesn't already
-			if !strings.HasPrefix(domain, "http") {
-				domain = "https://" + domain
-			}
-			t.url = domain
-		}
-	}
+	return runTunnel(ctx, opts, props, url, log, time.Until(deadline))
+}
 
-	return t, nil
+// newLogger builds the zerolog logger handed to cloudflared. Logs are only produced when ShowLog
+// is set, so nothing is ever written to the process's stderr behind the caller's back.
+func newLogger(opts Options) *zerolog.Logger {
+	if !opts.ShowLog {
+		logger := zerolog.Nop()
+		return &logger
+	}
+	writer := opts.LogWriter
+	if writer == nil {
+		writer = os.Stderr
+	}
+	logger := zerolog.New(writer).Level(zerolog.InfoLevel).With().Timestamp().Logger()
+	return &logger
+}
+
+// normalizeHostname strips any scheme from a domain and validates the remaining hostname. Ports and
+// paths are rejected rather than silently dropped, because DNS routes are created for bare hostnames.
+func normalizeHostname(domain string) (string, error) {
+	hostname := strings.TrimPrefix(strings.TrimPrefix(domain, "https://"), "http://")
+	hostname = strings.TrimSuffix(hostname, "/")
+	if hostname == "" || strings.ContainsAny(hostname, ":/") {
+		return "", fmt.Errorf("invalid Domain %q: expected a bare hostname such as app.example.com", domain)
+	}
+	hostname, err := validation.ValidateHostname(hostname)
+	if err != nil {
+		return "", fmt.Errorf("invalid Domain %q: %w", domain, err)
+	}
+	return hostname, nil
 }
