@@ -7,6 +7,10 @@ adheres to [Calendar Versioning](https://calver.org/) with `vYYYY.M.PATCH` tags.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [v2026.10.0] - 2026-10-08
+
 ### Changed
 
 - Module path is now `github.com/luank3/flared` (previously `github.com/lucanhost/flared`, the
@@ -25,8 +29,11 @@ adheres to [Calendar Versioning](https://calver.org/) with `vYYYY.M.PATCH` tags.
 - `Options.Timeout` bounds the whole `Start` call (provisioning plus connecting) and no longer
   limits the lifetime of the returned `Tunnel`.
 - Dependencies updated to `cloudflared v0.0.0-20261005153913-18cdfe0a6fc7` with upstream
-  `quic-go v0.59.1` and `urfave/cli v2.3.0`; all `replace` directives were removed, so downstream
-  modules no longer need any.
+  `quic-go v0.59.1`, `urfave/cli v2.3.0`, `prometheus/client_golang v1.24.1` and `zerolog v1.35.1`;
+  all `replace` directives were removed, so downstream modules no longer need any.
+- Repository scaffolding: CI (format, module tidiness, vet on both tag sets, build, `-race` unit
+  tests with coverage; integration suite on manual dispatch), a `Makefile`, `CONTRIBUTING.md`,
+  `SECURITY.md`, `CODE_OF_CONDUCT.md`, issue and PR templates, Dependabot and `.gitattributes`.
 
 ### Added
 
@@ -58,5 +65,6 @@ adheres to [Calendar Versioning](https://calver.org/) with `vYYYY.M.PATCH` tags.
   `Wait` and `Close`.
 - Unit tests for option validation and tunnel lifecycle, and integration tests for Quick Tunnels.
 
-[Unreleased]: https://github.com/luank3/flared/compare/v2026.5.2...HEAD
+[Unreleased]: https://github.com/luank3/flared/compare/v2026.10.0...HEAD
+[v2026.10.0]: https://github.com/luank3/flared/compare/v2026.5.2...v2026.10.0
 [v2026.5.2]: https://github.com/luank3/flared/releases/tag/v2026.5.2
